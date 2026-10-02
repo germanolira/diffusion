@@ -1,0 +1,1530 @@
+
+// file: data\react19\Counter.tsx
+import { memo, useCallback, useState } from 'react';
+
+interface CounterProps {
+  initial: number;
+  step: number;
+  label: string;
+}
+
+interface DisplayProps {
+  value: number;
+  label: string;
+}
+
+// Pure display, memoized to skip repeats.
+const CounterDisplay = memo(function CounterDisplay({ value, label }: DisplayProps) {
+  return (
+    <p aria-live="polite">
+      {label}: <strong>{value}</strong>
+    </p>
+  );
+});
+
+export function Counter({ initial, step, label }: CounterProps) {
+  const [count, setCount] = useState<number>(initial);
+
+  // Stable handlers keep memoized children cheap.
+  const increment = useCallback(() => {
+    setCount((c) => c + step);
+  }, [step]);
+
+  const decrement = useCallback(() => {
+    setCount((c) => c - step);
+  }, [step]);
+
+  const reset = useCallback(() => {
+    setCount(initial);
+  }, [initial]);
+
+  return (
+    <section>
+      <h2>Counter</h2>
+      <CounterDisplay value={count} label={label} />
+      <div>
+        <button type="button" onClick={decrement}>
+          Minus
+        </button>
+        <button type="button" onClick={increment}>
+          Plus
+        </button>
+        <button type="button" onClick={reset}>
+          Reset
+        </button>
+      </div>
+    </section>
+  );
+}
+
+
+// file: data\react19\DataFetcher.tsx
+import { useCallback, useEffect, useState } from 'react';
+
+interface User {
+  id: number;
+  name: string;
+}
+
+interface DataFetcherProps {
+  endpoint: string;
+  pollMs: number;
+}
+
+type Status = 'idle' | 'loading' | 'error' | 'done';
+
+async function fetchUsers(endpoint: string, signal: AbortSignal): Promise<User[]> {
+  const res = await fetch(endpoint, { signal });
+  if (!res.ok) throw new Error('Fetch failed');
+  return (await res.json()) as User[];
+}
+
+export function DataFetcher({ endpoint, pollMs }: DataFetcherProps) {
+  const [users, setUsers] = useState<User[]>([]);
+  const [status, setStatus] = useState<Status>('idle');
+  const [error, setError] = useState<string>('');
+
+  const load = useCallback(async (endpoint: string, signal: AbortSignal) => {
+    setStatus('loading');
+    setError('');
+    try {
+      const data = await fetchUsers(endpoint, signal);
+      setUsers(data);
+      setStatus('done');
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      setError(err instanceof Error ? err.message : 'Unknown error');
+      setStatus('error');
+    }
+  }, []);
+
+  // Fetch on mount plus optional polling.
+  useEffect(() => {
+    const controller = new AbortController();
+    void load(endpoint, controller.signal);
+    if (pollMs <= 0) return () => controller.abort();
+    const timer = window.setInterval(() => {
+      const c = new AbortController();
+      void load(endpoint, c.signal);
+    }, pollMs);
+    return () => {
+      controller.abort();
+      window.clearInterval(timer);
+    };
+  }, [endpoint, pollMs, load]);
+
+  if (status === 'loading' && users.length === 0) return <p>Loading users...</p>;
+  if (status === 'error') return <p role="alert">Error: {error}</p>;
+
+  return (
+    <section>
+      <h2>Users</h2>
+      <ul>
+        {users.map((u) => (
+          <li key={u.id}>{u.name}</li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+
+// file: data\react19\ErrorBoundary.tsx
+import { Component, Suspense, lazy } from 'react';
+import type { ErrorInfo, ReactNode } from 'react';
+
+interface BoundaryProps {
+  fallbackTitle: string;
+  children: ReactNode;
+}
+
+interface BoundaryState {
+  hasError: boolean;
+  message: string;
+}
+
+// Only class allowed: isolates render crashes.
+export class ErrorBoundary extends Component<BoundaryProps, BoundaryState> {
+  state: BoundaryState = { hasError: false, message: '' };
+
+  static getDerivedStateFromError(error: Error): BoundaryState {
+    return { hasError: true, message: error.message };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo): void {
+    console.error(error, info.componentStack);
+  }
+
+  reset = (): void => {
+    this.setState({ hasError: false, message: '' });
+  };
+
+  render(): ReactNode {
+    if (this.state.hasError) {
+      return (
+        <div role="alert">
+          <h2>{this.props.fallbackTitle}</h2>
+          <p>{this.state.message}</p>
+          <button type="button" onClick={this.reset}>
+            Try again
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+const SlowPanel = lazy(async () => ({
+  default: function SlowPanel({ label }: { label: string }) {
+    return <p>Loaded panel: {label}</p>;
+  },
+}));
+
+interface SafePanelProps {
+  label: string;
+  fallbackTitle: string;
+}
+
+export function SafePanel({ label, fallbackTitle }: SafePanelProps) {
+  return (
+    <ErrorBoundary fallbackTitle={fallbackTitle}>
+      <Suspense fallback={<p>Loading panel...</p>}>
+        <SlowPanel label={label} />
+      </Suspense>
+    </ErrorBoundary>
+  );
+}
+
+
+// file: data\react19\FormAction.tsx
+import { useActionState } from 'react';
+
+interface FormState {
+  message: string;
+  ok: boolean;
+}
+
+interface FormActionProps {
+  heading: string;
+  minLength: number;
+}
+
+const initialState: FormState = { message: '', ok: false };
+
+// Server-style action runs client side here.
+async function submitProfile(
+  prev: FormState,
+  formData: FormData
+): Promise<FormState> {
+  void prev;
+  const name = String(formData.get('name') ?? '').trim();
+  const bio = String(formData.get('bio') ?? '').trim();
+  await new Promise((r) => setTimeout(r, 300));
+  if (name.length < 2) return { message: 'Name too short.', ok: false };
+  if (bio.length < 10) return { message: 'Bio needs 10+ chars.', ok: false };
+  return { message: `Saved profile for ${name}.`, ok: true };
+}
+
+export function FormAction({ heading, minLength }: FormActionProps) {
+  const [state, formAction, isPending] = useActionState(submitProfile, initialState);
+
+  return (
+    <section>
+      <h2>{heading}</h2>
+      <form action={formAction}>
+        <div>
+          <label htmlFor="name">Name</label>
+          <input id="name" name="name" required minLength={2} />
+        </div>
+        <div>
+          <label htmlFor="bio">Bio</label>
+          <textarea id="bio" name="bio" required minLength={minLength} />
+        </div>
+        <button type="submit" disabled={isPending}>
+          {isPending ? 'Saving...' : 'Save'}
+        </button>
+      </form>
+      {state.message ? (
+        <p role={state.ok ? 'status' : 'alert'}>{state.message}</p>
+      ) : null}
+    </section>
+  );
+}
+
+
+// file: data\react19\Modal.tsx
+import { useEffect, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
+
+interface ModalProps {
+  title: string;
+  triggerLabel: string;
+  children: ReactNode;
+}
+
+export function Modal({ title, triggerLabel, children }: ModalProps) {
+  const [open, setOpen] = useState<boolean>(false);
+  const closeRef = useRef<HTMLButtonElement>(null);
+
+  // Focus close button when modal opens.
+  useEffect(() => {
+    if (open) closeRef.current?.focus();
+  }, [open ]);
+
+  // Close on Escape for keyboard users.
+  useEffect(() => {
+    if (!open) return;
+    function onKey(e: KeyboardEvent): void {
+      if (e.key === 'Escape') setOpen(false);
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open ]);
+
+  return (
+    <div>
+      <button type="button" onClick={() => setOpen(true)}>
+        {triggerLabel}
+      </button>
+      {open ? (
+        <div role="dialog" aria-modal="true" aria-label={title}>
+          <div role="presentation" onClick={() => setOpen(false)} />
+          <div>
+            <h2>{title}</h2>
+            <div>{children}</div>
+            <button ref={closeRef} type="button" onClick={() => setOpen(false)}>
+              Close
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+
+// file: data\react19\OptimisticLike.tsx
+import { useOptimistic, useState } from 'react';
+
+interface Post {
+  id: number;
+  title: string;
+  likes: number;
+  liked: boolean;
+}
+
+interface OptimisticLikeProps {
+  initialPost: Post;
+  label: string;
+}
+
+export function OptimisticLike({ initialPost, label }: OptimisticLikeProps) {
+  const [post, setPost] = useState<Post>(initialPost);
+
+  // Optimistic copy updates instantly, then syncs.
+  const [optimistic, addOptimistic] = useOptimistic<Post, boolean>(
+    post,
+    (current, nextLiked) => ({
+      ...current,
+      liked: nextLiked,
+      likes: current.likes + (nextLiked ? 1 : -1),
+    })
+  );
+
+  async function toggle(): Promise<void> {
+    const next = !optimistic.liked;
+    addOptimistic(next);
+    // Fake latency for the server write.
+    await new Promise((r) => setTimeout(r, 400));
+    setPost((p) => ({
+      ...p,
+      liked: next,
+      likes: p.likes + (next ? 1 : -1),
+    }));
+  }
+
+  return (
+    <article>
+      <h2>{optimistic.title}</h2>
+      <p>
+        {label}: {optimistic.likes}
+      </p>
+      <button type="button" onClick={toggle} aria-pressed={optimistic.liked}>
+        {optimistic.liked ? 'Unlike' : 'Like'}
+      </button>
+    </article>
+  );
+}
+
+
+// file: data\react19\SearchFilter.tsx
+import { useDeferredValue, useId, useMemo, useState } from 'react';
+
+interface Product {
+  id: number;
+  name: string;
+  category: string;
+}
+
+interface SearchFilterProps {
+  products: Product[];
+  placeholder: string;
+}
+
+export function SearchFilter({ products, placeholder }: SearchFilterProps) {
+  const [query, setQuery] = useState<string>('');
+  const inputId = useId();
+
+  // Defer heavy filter while typing stays fast.
+  const deferredQuery = useDeferredValue(query);
+
+  const results = useMemo(() => {
+    const q = deferredQuery.trim().toLowerCase();
+    if (!q) return products;
+    return products.filter(
+      (p) => p.name.toLowerCase().includes(q) || p.category.toLowerCase().includes(q)
+    );
+  }, [products, deferredQuery]);
+
+  return (
+    <section>
+      <h2>Search</h2>
+      <label htmlFor={inputId}>Filter products</label>
+      <input
+        id={inputId}
+        value={query}
+        placeholder={placeholder}
+        onChange={(e) => setQuery(e.target.value)}
+      />
+      <p>
+        {results.length} of {products.length} shown
+      </p>
+      <ul>
+        {results.map((p) => (
+          <li key={p.id}>
+            {p.name} <small>({p.category})</small>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+
+// file: data\react19\Tabs.tsx
+import { useCallback, useState } from 'react';
+
+interface Tab {
+  id: string;
+  label: string;
+  content: string;
+}
+
+interface TabsProps {
+  tabs: Tab[];
+  initialId: string;
+}
+
+interface TabButtonProps {
+  active: boolean;
+  label: string;
+  onSelect: () => void;
+}
+
+function TabButton({ active, label, onSelect }: TabButtonProps) {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={active}
+      onClick={onSelect}
+    >
+      {label}
+    </button>
+  );
+}
+
+export function Tabs({ tabs, initialId }: TabsProps) {
+  const [activeId, setActiveId] = useState<string>(initialId);
+
+  const select = useCallback((id: string) => {
+    setActiveId(id);
+  }, []);
+
+  // Derived active tab, no mirror state.
+  const active = tabs.find((t) => t.id === activeId) ?? tabs[0];
+
+  return (
+    <section>
+      <div role="tablist">
+        {tabs.map((t) => (
+          <TabButton
+            key={t.id}
+            label={t.label}
+            active={t.id === active.id}
+            onSelect={() => select(t.id)}
+          />
+        ))}
+      </div>
+      <div role="tabpanel">
+        <p>{active.content}</p>
+      </div>
+    </section>
+  );
+}
+
+
+// file: data\react19\ThemeContext.tsx
+import { createContext, useCallback, useContext, useMemo, useState } from 'react';
+import type { ReactNode } from 'react';
+
+type Theme = 'light' | 'dark';
+
+interface ThemeValue {
+  theme: Theme;
+  toggle: () => void;
+}
+
+interface ThemeProviderProps {
+  initial: Theme;
+  children: ReactNode;
+}
+
+const ThemeContext = createContext<ThemeValue | null>(null);
+
+export function ThemeProvider({ initial, children }: ThemeProviderProps) {
+  const [theme, setTheme] = useState<Theme>(initial);
+
+  const toggle = useCallback(() => {
+    setTheme((t) => (t === 'light' ? 'dark' : 'light'));
+  }, []);
+
+  // Memo value so consumers skip rerenders.
+  const value = useMemo<ThemeValue>(() => ({ theme, toggle }), [theme, toggle]);
+
+  return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
+}
+
+export function useTheme(): ThemeValue {
+  const ctx = useContext(ThemeContext);
+  if (!ctx) throw new Error('useTheme needs ThemeProvider');
+  return ctx;
+}
+
+interface ThemedCardProps {
+  title: string;
+  body: string;
+}
+
+export function ThemedCard({ title, body }: ThemedCardProps) {
+  const { theme, toggle } = useTheme();
+  return (
+    <div data-theme={theme}>
+      <h2>{title}</h2>
+      <p>{body}</p>
+      <button type="button" onClick={toggle}>
+        Switch to {theme === 'light' ? 'dark' : 'light'}
+      </button>
+    </div>
+  );
+}
+
+
+// file: data\react19\TodoList.tsx
+import { memo, useMemo, useState } from 'react';
+
+interface Todo {
+  id: number;
+  text: string;
+  done: boolean;
+}
+
+interface TodoListProps {
+  title: string;
+  initialTodos: Todo[];
+}
+
+interface ItemProps {
+  todo: Todo;
+  onToggle: (id: number) => void;
+}
+
+// Small memoized row avoids full list rerender.
+const TodoItem = memo(function TodoItem({ todo, onToggle }: ItemProps) {
+  return (
+    <li>
+      <label>
+        <input
+          type="checkbox"
+          checked={todo.done}
+          onChange={() => onToggle(todo.id)}
+        />
+        <span>{todo.text}</span>
+      </label>
+    </li>
+  );
+});
+
+export function TodoList({ title, initialTodos }: TodoListProps) {
+  const [todos, setTodos] = useState<Todo[]>(initialTodos);
+  const [draft, setDraft] = useState<string>('');
+
+  // Derived state, no extra useState needed.
+  const remaining = useMemo(() => todos.filter((t) => !t.done).length, [todos]);
+
+  function toggle(id: number): void {
+    setTodos((prev) => prev.map((t) => (t.id === id ? { ...t, done: !t.done } : t)));
+  }
+
+  function add(): void {
+    const text = draft.trim();
+    if (!text) return;
+    setTodos((prev) => [...prev, { id: Date.now(), text, done: false }]);
+    setDraft('');
+  }
+
+  return (
+    <section>
+      <h2>{title}</h2>
+      <p>{remaining} left</p>
+      <div>
+        <input
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          placeholder="New todo"
+        />
+        <button type="button" onClick={add}>
+          Add
+        </button>
+      </div>
+      <ul>
+        {todos.map((todo) => (
+          <TodoItem key={todo.id} todo={todo} onToggle={toggle} />
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+
+// file: data\react19\useDebounce.ts
+import { useEffect, useState } from 'react';
+
+interface DebounceOptions {
+  delayMs: number;
+  initial: string;
+}
+
+interface UseDebounceResult {
+  value: string;
+  debounced: string;
+  setValue: (next: string) => void;
+}
+
+// Reusable input debounce logic.
+export function useDebounce({ delayMs, initial }: DebounceOptions): UseDebounceResult {
+  const [value, setValue] = useState<string>(initial);
+  const [debounced, setDebounced] = useState<string>(initial);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebounced(value), delayMs);
+    return () => window.clearTimeout(timer);
+  }, [value, delayMs]);
+
+  return { value, debounced, setValue };
+}
+
+interface DebouncedInputProps {
+  label: string;
+  delayMs: number;
+  initial: string;
+}
+
+export function DebouncedInput({ label, delayMs, initial }: DebouncedInputProps) {
+  const { value, debounced, setValue } = useDebounce({ delayMs, initial });
+
+  return (
+    <div>
+      <label>
+        {label}
+        <input value={value} onChange={(e) => setValue(e.target.value)} />
+      </label>
+      <p>
+        Debounced: <strong>{debounced}</strong>
+      </p>
+    </div>
+  );
+}
+
+
+// file: data\react19\VirtualList.tsx
+import { memo, useMemo, useState } from 'react';
+
+interface Row {
+  id: number;
+  text: string;
+}
+
+interface VirtualListProps {
+  rows: Row[];
+  rowHeight: number;
+  viewportHeight: number;
+}
+
+interface RowViewProps {
+  row: Row;
+  top: number;
+  height: number;
+}
+
+// Absolute rows keep scroll math simple.
+const RowView = memo(function RowView({ row, top, height }: RowViewProps) {
+  return (
+    <div style={{ position: 'absolute', top, height, left: 0, right: 0 }}>
+      {row.text}
+    </div>
+  );
+});
+
+export function VirtualList({ rows, rowHeight, viewportHeight }: VirtualListProps) {
+  const [scrollTop, setScrollTop] = useState<number>(0);
+
+  const visible = useMemo(() => {
+    const start = Math.max(0, Math.floor(scrollTop / rowHeight) - 2);
+    const count = Math.ceil(viewportHeight / rowHeight) + 4;
+    return rows.slice(start, start + count).map((row, i) => ({
+      row,
+      index: start + i,
+    }));
+  }, [rows, rowHeight, viewportHeight, scrollTop]);
+
+  const totalHeight = rows.length * rowHeight;
+
+  return (
+    <div
+      onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+      style={{ overflowY: 'auto', height: viewportHeight }}
+    >
+      <div style={{ position: 'relative', height: totalHeight }}>
+        {visible.map(({ row, index }) => (
+          <RowView key={row.id} row={row} top={index * rowHeight} height={rowHeight} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+
+// file: data\sample\Button.tsx
+import { useState } from "react";
+
+export function Button({ label }: { label: string }) {
+  const [count, setCount] = useState(0);
+  return (
+    <button onClick={() => setCount((c) => c + 1)}>
+      {label}: {count}
+    </button>
+  );
+}
+
+
+// file: data\sample\useCounter.ts
+import { useEffect, useState } from "react";
+
+export function useCounter(initial = 0) {
+  const [value, setValue] = useState(initial);
+  useEffect(() => {
+    document.title = `count=${value}`;
+  }, [value]);
+  return { value, inc: () => setValue((v) => v + 1) };
+}
+
+
+// file: data\typescript\asyncUtils.ts
+// Async helpers: AbortController, timeout, retry.
+export function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Reject if the task takes longer than ms.
+export async function withTimeout<T>(task: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const limit = new Promise<T>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("timed out")), ms);
+  });
+  try {
+    return await Promise.race([task, limit]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+export interface RetryOpts {
+  readonly tries: number;
+  readonly delayMs: number;
+}
+
+// Retry a fallible async fn with a fixed delay.
+export async function retry<T>(fn: () => Promise<T>, opts: RetryOpts): Promise<T> {
+  let last: unknown;
+  for (let i = 0; i < opts.tries; i++) {
+    try {
+      return await fn();
+    } catch (e: unknown) {
+      last = e;
+      await sleep(opts.delayMs);
+    }
+  }
+  if (last instanceof Error) throw last;
+  throw new Error("retry failed");
+}
+
+// Fetch with an abort signal that fires after ms.
+export async function fetchWithAbort(url: string, ms: number): Promise<Response> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(url, { signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Run tasks with at most limit in flight.
+export async function mapLimit<T, U>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<U>
+): Promise<U[]> {
+  const out: U[] = new Array(items.length);
+  let next = 0;
+  async function worker(): Promise<void> {
+    while (next < items.length) {
+      const i = next;
+      next += 1;
+      const item = items[i];
+      if (item !== undefined) out[i] = await fn(item);
+    }
+  }
+  const workers: Promise<void>[] = [];
+  const n = Math.min(limit, items.length);
+  for (let k = 0; k < n; k++) workers.push(worker());
+  await Promise.all(workers);
+  return out;
+}
+
+
+// file: data\typescript\collections.ts
+// Const assertions, template literals, collections.
+export const verbs = ["read", "write", "remove"] as const;
+export type Verb = (typeof verbs)[number];
+
+export type Route = `/api/${string}`;
+export type EventName = `on${Capitalize<string>}`;
+
+// Build a typed route path.
+export function apiRoute(name: string): Route {
+  return `/api/${name}`;
+}
+
+function sameValue(a: unknown, b: unknown): boolean {
+  return a === b || (Number.isNaN(a) && Number.isNaN(b));
+}
+
+// Deep clone plain data via JSON round trip.
+export function deepClone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+// Structural equality for plain data.
+export function deepEqual(a: unknown, b: unknown): boolean {
+  if (sameValue(a, b)) return true;
+  if (typeof a !== typeof b) return false;
+  if (typeof a !== "object" || a === null || b === null) return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b)) return false;
+    if (a.length !== b.length) return false;
+    return a.every((x, i) => deepEqual(x, b[i]));
+  }
+  const ra = a as Record<string, unknown>;
+  const rb = b as Record<string, unknown>;
+  const ka = Object.keys(ra);
+  const kb = Object.keys(rb);
+  if (ka.length !== kb.length) return false;
+  return ka.every((k) => deepEqual(ra[k], rb[k]));
+}
+
+// Unique values keeping first order.
+export function unique<T>(items: readonly T[]): T[] {
+  return [...new Set(items)];
+}
+
+// Split a list into fixed-size chunks.
+export function chunk<T>(items: readonly T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    out.push(items.slice(i, i + size));
+  }
+  return out;
+}
+
+// Count occurrences by key.
+export function countBy<T>(items: readonly T[], keyOf: (x: T) => string): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const x of items) {
+    const k = keyOf(x);
+    out[k] = (out[k] ?? 0) + 1;
+  }
+  return out;
+}
+
+
+// file: data\typescript\config.ts
+// Config parsing with validation at the boundary.
+export interface AppConfig {
+  readonly host: string;
+  readonly port: number;
+  readonly debug: boolean;
+  readonly tags: readonly string[];
+}
+
+export type ConfigError = { readonly field: string; readonly hint: string };
+export type ConfigResult =
+  | { readonly ok: true; readonly config: AppConfig }
+  | { readonly ok: false; readonly errors: ConfigError[] };
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+const defaults = {
+  host: "localhost",
+  port: 3000,
+  debug: false,
+  tags: [],
+} satisfies Record<keyof AppConfig, unknown>;
+
+// Read one string field with a fallback.
+function readString(src: Record<string, unknown>, key: string, fb: string): string {
+  const v: unknown = src[key];
+  return typeof v === "string" && v.length > 0 ? v : fb;
+}
+
+// Parse unknown input into a checked AppConfig.
+export function parseConfig(input: unknown): ConfigResult {
+  if (!isRecord(input)) {
+    return { ok: false, errors: [{ field: "root", hint: "not an object" }] };
+  }
+  const errors: ConfigError[] = [];
+  const host = readString(input, "host", defaults.host);
+
+  let port = defaults.port;
+  const rawPort: unknown = input["port"];
+  if (typeof rawPort === "number" && Number.isInteger(rawPort)) {
+    if (rawPort < 1 || rawPort > 65535) {
+      errors.push({ field: "port", hint: "out of range" });
+    } else {
+      port = rawPort;
+    }
+  } else if (rawPort !== undefined) {
+    errors.push({ field: "port", hint: "must be an integer" });
+  }
+
+  const rawDebug: unknown = input["debug"];
+  const debug = typeof rawDebug === "boolean" ? rawDebug : defaults.debug;
+
+  const rawTags: unknown = input["tags"];
+  let tags: readonly string[] = defaults.tags;
+  if (rawTags !== undefined) {
+    if (Array.isArray(rawTags) && rawTags.every((x) => typeof x === "string")) {
+      tags = rawTags as string[];
+    } else {
+      errors.push({ field: "tags", hint: "must be string[]" });
+    }
+  }
+
+  if (errors.length > 0) return { ok: false, errors };
+  return { ok: true, config: { host, port, debug, tags } };
+}
+
+export function defaultConfig(): AppConfig {
+  return { ...defaults, tags: [...defaults.tags] };
+}
+
+
+// file: data\typescript\emitter.ts
+// Typed event emitter keyed by event name.
+export type Handler<T> = (payload: T) => void;
+
+export interface AppEvents {
+  readonly message: { readonly text: string };
+  readonly count: { readonly n: number };
+  readonly closed: { readonly reason: string };
+}
+
+export class Emitter<TEvents extends Record<string, unknown>> {
+  private handlers = new Map<keyof TEvents, Set<Handler<never>>>();
+
+  on<K extends keyof TEvents>(event: K, fn: Handler<TEvents[K]>): () => void {
+    let set = this.handlers.get(event);
+    if (!set) {
+      set = new Set();
+      this.handlers.set(event, set);
+    }
+    set.add(fn as Handler<never>);
+    return () => this.off(event, fn);
+  }
+
+  off<K extends keyof TEvents>(event: K, fn: Handler<TEvents[K]>): void {
+    this.handlers.get(event)?.delete(fn as Handler<never>);
+  }
+
+  once<K extends keyof TEvents>(event: K, fn: Handler<TEvents[K]>): void {
+    const wrap: Handler<TEvents[K]> = (p) => {
+      this.off(event, wrap);
+      fn(p);
+    };
+    this.on(event, wrap);
+  }
+
+  emit<K extends keyof TEvents>(event: K, payload: TEvents[K]): void {
+    const set = this.handlers.get(event);
+    if (!set) return;
+    for (const fn of [...set]) (fn as Handler<TEvents[K]>)(payload);
+  }
+
+  listenerCount<K extends keyof TEvents>(event: K): number {
+    return this.handlers.get(event)?.size ?? 0;
+  }
+}
+
+export type AppEmitter = Emitter<AppEvents>;
+
+export function createAppEmitter(): AppEmitter {
+  return new Emitter<AppEvents>();
+}
+
+// Emit a chat message event.
+export function sendMessage(bus: AppEmitter, text: string): void {
+  bus.emit("message", { text });
+}
+
+
+// file: data\typescript\errors.ts
+// Typed errors without throwing across layers.
+export class AppError extends Error {
+  readonly code: string;
+  constructor(code: string, msg: string) {
+    super(msg);
+    this.name = "AppError";
+    this.code = code;
+  }
+}
+
+export class NotFoundError extends AppError {
+  constructor(id: string) {
+    super("NOT_FOUND", "missing: " + id);
+    this.name = "NotFoundError";
+  }
+}
+
+export class ValidationError extends AppError {
+  readonly fields: readonly string[];
+  constructor(fields: readonly string[]) {
+    super("BAD_INPUT", "bad fields: " + fields.join(", "));
+    this.name = "ValidationError";
+    this.fields = fields;
+  }
+}
+
+export function isError(v: unknown): v is Error {
+  return v instanceof Error;
+}
+
+// Convert unknown catch values to Error.
+export function toError(v: unknown): Error {
+  if (v instanceof Error) return v;
+  if (typeof v === "string") return new Error(v);
+  return new Error("unknown failure");
+}
+
+// Short one-line error summary.
+export function formatError(e: Error): string {
+  return e.name + ": " + e.message;
+}
+
+export type Outcome<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly error: AppError };
+
+// Wrap a throwing step into an Outcome.
+export function attempt<T>(fn: () => T, code: string): Outcome<T> {
+  try {
+    return { ok: true, value: fn() };
+  } catch (e: unknown) {
+    return { ok: false, error: new AppError(code, toError(e).message) };
+  }
+}
+
+// Map the success value of an Outcome.
+export function mapOutcome<T, U>(o: Outcome<T>, fn: (v: T) => U): Outcome<U> {
+  if (!o.ok) return o;
+  return { ok: true, value: fn(o.value) };
+}
+
+
+// file: data\typescript\fetchClient.ts
+// Typed fetch wrapper with explicit errors.
+export type HttpMethod = "GET" | "POST" | "PUT" | "DELETE";
+
+export class HttpError extends Error {
+  readonly status: number;
+  readonly body: string;
+  constructor(status: number, body: string) {
+    super("HTTP " + String(status));
+    this.name = "HttpError";
+    this.status = status;
+    this.body = body;
+  }
+}
+
+export class NetworkError extends Error {
+  constructor(msg: string) {
+    super(msg);
+    this.name = "NetworkError";
+  }
+}
+
+export type FetchOk<T> = { readonly ok: true; readonly data: T };
+export type FetchFail = { readonly ok: false; readonly error: HttpError | NetworkError };
+export type FetchResult<T> = FetchOk<T> | FetchFail;
+
+export interface RequestOpts {
+  readonly method?: HttpMethod;
+  readonly headers?: Record<string, string>;
+  readonly body?: string;
+  readonly signal?: AbortSignal;
+}
+
+function isJsonObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+// Fetch JSON and validate with a guard fn.
+export async function fetchJson<T>(
+  url: string,
+  guard: (v: unknown) => v is T,
+  opts: RequestOpts = {}
+): Promise<FetchResult<T>> {
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: opts.method ?? "GET",
+      headers: opts.headers,
+      body: opts.body,
+      signal: opts.signal,
+    });
+  } catch (e: unknown) {
+    if (e instanceof Error) return { ok: false, error: new NetworkError(e.message) };
+    return { ok: false, error: new NetworkError("fetch failed") };
+  }
+  if (!res.ok) {
+    const text = await res.text();
+    return { ok: false, error: new HttpError(res.status, text) };
+  }
+  const data: unknown = await res.json();
+  void isJsonObject;
+  if (guard(data)) return { ok: true, data };
+  return { ok: false, error: new HttpError(res.status, "bad payload") };
+}
+
+// POST a JSON body and read a typed reply.
+export async function postJson<T>(
+  url: string,
+  payload: Record<string, unknown>,
+  guard: (v: unknown) => v is T
+): Promise<FetchResult<T>> {
+  return fetchJson(url, guard, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+
+// file: data\typescript\generics.ts
+// Generics with constraints.
+export function identity<T>(value: T): T {
+  return value;
+}
+
+// Key must exist on the object type.
+export function getProp<T, K extends keyof T>(obj: T, key: K): T[K] {
+  return obj[key];
+}
+
+// Only objects with a string id fit here.
+export interface HasId {
+  readonly id: string;
+}
+
+export class Repository<T extends HasId> {
+  private items = new Map<string, T>();
+
+  save(item: T): void {
+    this.items.set(item.id, item);
+  }
+
+  findById(id: string): T | undefined {
+    return this.items.get(id);
+  }
+
+  list(): T[] {
+    return [...this.items.values()];
+  }
+}
+
+// Group items by a derived key.
+export function groupBy<T, K extends string | number>(
+  items: readonly T[],
+  keyOf: (item: T) => K
+): Record<K, T[]> {
+  const out = {} as Record<K, T[]>;
+  for (const item of items) {
+    const key = keyOf(item);
+    const slot = out[key];
+    if (slot) slot.push(item);
+    else out[key] = [item];
+  }
+  return out;
+}
+
+// Pick the item with the smallest score.
+export function minBy<T>(items: readonly T[], score: (item: T) => number): T | undefined {
+  let best: T | undefined;
+  let bestScore = Infinity;
+  for (const item of items) {
+    const s = score(item);
+    if (s < bestScore) {
+      bestScore = s;
+      best = item;
+    }
+  }
+  return best;
+}
+
+// Constrain to comparable records.
+export function sortBy<T>(items: readonly T[], key: (item: T) => number): T[] {
+  return [...items].sort((a, b) => key(a) - key(b));
+}
+
+
+// file: data\typescript\guards.ts
+// Type guards and narrowing helpers.
+export interface User {
+  readonly id: string;
+  readonly name: string;
+  readonly age: number;
+}
+
+export function isString(v: unknown): v is string {
+  return typeof v === "string";
+}
+
+export function isNumber(v: unknown): v is number {
+  return typeof v === "number" && Number.isFinite(v);
+}
+
+export function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+export function isStringArray(v: unknown): v is string[] {
+  return Array.isArray(v) && v.every((x) => typeof x === "string");
+}
+
+// Check for a named property on an object.
+export function hasProp<K extends string>(
+  v: unknown,
+  key: K
+): v is Record<K, unknown> {
+  return isRecord(v) && key in v;
+}
+
+export function isUser(v: unknown): v is User {
+  if (!isRecord(v)) return false;
+  return (
+    hasProp(v, "id") &&
+    hasProp(v, "name") &&
+    hasProp(v, "age") &&
+    isString(v.id) &&
+    isString(v.name) &&
+    isNumber(v.age)
+  );
+}
+
+// Narrow unknown input to a safe string.
+export function toSafeString(v: unknown): string {
+  if (isString(v)) return v;
+  if (isNumber(v)) return String(v);
+  return "";
+}
+
+// Narrow with instanceof before use.
+export function errorMessage(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  if (isString(e)) return e;
+  return "unknown error";
+}
+
+// Parse JSON with a guard on the result.
+export function parseJsonAs(text: string, guard: (v: unknown) => boolean): boolean {
+  const parsed: unknown = JSON.parse(text);
+  return guard(parsed);
+}
+
+
+// file: data\typescript\result.ts
+// Result type for explicit error handling.
+export type Ok<T> = { readonly ok: true; readonly value: T };
+export type Err<E> = { readonly ok: false; readonly error: E };
+export type Result<T, E> = Ok<T> | Err<E>;
+
+export function ok<T>(value: T): Ok<T> {
+  return { ok: true, value };
+}
+
+export function err<E>(error: E): Err<E> {
+  return { ok: false, error };
+}
+
+// Map the success value, keep the error as is.
+export function map<T, U, E>(r: Result<T, E>, fn: (v: T) => U): Result<U, E> {
+  if (!r.ok) return r;
+  return ok(fn(r.value));
+}
+
+// Chain fallible steps without try/catch.
+export function flatMap<T, U, E>(
+  r: Result<T, E>,
+  fn: (v: T) => Result<U, E>
+): Result<U, E> {
+  if (!r.ok) return r;
+  return fn(r.value);
+}
+
+// Fallback value for the error case.
+export function unwrapOr<T, E>(r: Result<T, E>, fallback: T): T {
+  return r.ok ? r.value : fallback;
+}
+
+// Run a throwing fn and capture the error.
+export function fromThrowable<T>(fn: () => T, label: string): Result<T, string> {
+  try {
+    return ok(fn());
+  } catch (e: unknown) {
+    if (e instanceof Error) return err(label + ": " + e.message);
+    return err(label + ": unknown failure");
+  }
+}
+
+// Combine many results, stop at first error.
+export function combine<T, E>(items: Result<T, E>[]): Result<T[], E> {
+  const out: T[] = [];
+  for (const item of items) {
+    if (!item.ok) return item;
+    out.push(item.value);
+  }
+  return ok(out);
+}
+
+// Narrow a Result to its Ok branch.
+export function isOk<T, E>(r: Result<T, E>): r is Ok<T> {
+  return r.ok;
+}
+
+
+// file: data\typescript\unions.ts
+// Discriminated unions with exhaustive switch.
+export type Circle = { readonly kind: "circle"; readonly radius: number };
+export type Square = { readonly kind: "square"; readonly side: number };
+export type Rect = { readonly kind: "rect"; readonly w: number; readonly h: number };
+export type Shape = Circle | Square | Rect;
+
+export function area(shape: Shape): number {
+  switch (shape.kind) {
+    case "circle":
+      return Math.PI * shape.radius * shape.radius;
+    case "square":
+      return shape.side * shape.side;
+    case "rect":
+      return shape.w * shape.h;
+    default: {
+      const done: never = shape;
+      return done;
+    }
+  }
+}
+
+export type ApiResponse =
+  | { readonly status: "ok"; readonly items: string[] }
+  | { readonly status: "empty" }
+  | { readonly status: "failed"; readonly reason: string };
+
+export function countItems(res: ApiResponse): number {
+  switch (res.status) {
+    case "ok":
+      return res.items.length;
+    case "empty":
+      return 0;
+    case "failed":
+      return 0;
+    default: {
+      const done: never = res;
+      return done;
+    }
+  }
+}
+
+export type TaskState =
+  | { readonly phase: "idle" }
+  | { readonly phase: "running"; readonly startedAt: number }
+  | { readonly phase: "done"; readonly result: string };
+
+// Describe the current task phase.
+export function describeTask(t: TaskState): string {
+  switch (t.phase) {
+    case "idle":
+      return "waiting";
+    case "running":
+      return "started at " + String(t.startedAt);
+    case "done":
+      return "got " + t.result;
+    default: {
+      const done: never = t;
+      return done;
+    }
+  }
+}
+
+
+// file: data\typescript\utilities.ts
+// Utility types: Partial, Pick, Omit, Record.
+export interface Account {
+  readonly id: string;
+  readonly name: string;
+  readonly email: string;
+  readonly role: string;
+  readonly active: boolean;
+}
+
+export type AccountPreview = Pick<Account, "id" | "name">;
+export type AccountUpdate = Partial<Pick<Account, "name" | "email" | "active">>;
+export type AccountPublic = Omit<Account, "email">;
+
+// Apply a partial update to an account.
+export function updateAccount(acc: Account, patch: AccountUpdate): Account {
+  return { ...acc, ...patch };
+}
+
+export function toPreview(acc: Account): AccountPreview {
+  return { id: acc.id, name: acc.name };
+}
+
+export function toPublic(acc: Account): AccountPublic {
+  return { id: acc.id, name: acc.name, role: acc.role, active: acc.active };
+}
+
+// Count accounts per role.
+export function countByRole(accs: readonly Account[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const a of accs) {
+    out[a.role] = (out[a.role] ?? 0) + 1;
+  }
+  return out;
+}
+
+// satisfies keeps literal types while checking shape.
+const defaultFlags = {
+  theme: "dark",
+  pageSize: 20,
+  debug: false,
+} satisfies Record<string, string | number | boolean>;
+
+export type Flags = typeof defaultFlags;
+
+export function flagValue<K extends keyof Flags>(key: K): Flags[K] {
+  return defaultFlags[key];
+}
+
+// Build a lookup table from a list.
+export function indexById(accs: readonly Account[]): Record<string, Account> {
+  const out: Record<string, Account> = {};
+  for (const a of accs) out[a.id] = a;
+  return out;
+}
+
+
+// file: data\typescript\validators.ts
+// Small validators that return typed results.
+export type Issue = { readonly field: string; readonly hint: string };
+
+export function validEmail(v: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+}
+
+export function validPort(n: number): boolean {
+  return Number.isInteger(n) && n >= 1 && n <= 65535;
+}
+
+export function validSlug(v: string): boolean {
+  return /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(v);
+}
+
+// Parse a finite number from unknown input.
+export function parseNumber(v: unknown): number | undefined {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string" && v.trim() !== "") {
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return undefined;
+}
+
+// Collect issues for a signup form.
+export function checkSignup(name: string, email: string, age: number): Issue[] {
+  const out: Issue[] = [];
+  if (name.trim().length < 2) out.push({ field: "name", hint: "too short" });
+  if (!validEmail(email)) out.push({ field: "email", hint: "bad format" });
+  if (!Number.isInteger(age) || age < 13) out.push({ field: "age", hint: "too young" });
+  return out;
+}
+
+// Debounce rapid calls into one trailing call.
+export function debounce<A extends unknown[]>(
+  fn: (...args: A) => void,
+  ms: number
+): (...args: A) => void {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return (...args: A) => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), ms);
+  };
+}
+
+// Throttle to at most one call per window.
+export function throttle<A extends unknown[]>(
+  fn: (...args: A) => void,
+  ms: number
+): (...args: A) => void {
+  let last = 0;
+  return (...args: A) => {
+    const now = Date.now();
+    if (now - last >= ms) {
+      last = now;
+      fn(...args);
+    }
+  };
+}
+

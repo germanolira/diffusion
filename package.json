@@ -1,0 +1,12 @@
+{
+  "name": "diffusion-llm-react",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "collect": "tsx tools/collect-code.ts data/sample data/code.txt"
+  },
+  "devDependencies": {
+    "tsx": "4.19.1",
+    "typescript": "5.6.3"
+  }
+}
